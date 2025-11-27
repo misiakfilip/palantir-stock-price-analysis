@@ -1,0 +1,356 @@
+---
+title: "Analiza Cen Akcji firmy Palantir"
+author: "Filip Misiak, Adam Kowalczyk"
+date: "2025-05-31"
+output:
+  html_document: default
+  pdf_document:
+      latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+```
+
+``` {r Biblioteki, include=FALSE}
+library(forecast)
+library(quantmod)
+library(ggplot2)
+library(tseries)
+```
+
+## Charakterystyka danych
+Dane dotyczące akcji spółki Palantir Technologies Inc. (ticker: PLTR) zostały pobrane z serwisu Yahoo Finance. Zawierają one informacje o cenach akcji notowanych na giełdzie NASDAQ.
+
+Częstotliwość danych: dzienna
+Dane są rejestrowane w dniach roboczych giełdy (tj. od poniedziałku do piątku, z wyłączeniem dni świątecznych). Każdy wpis odpowiada jednemu dniowi notowań giełdowych.
+
+Zakres czasowy:
+Dane obejmują okres od 1 stycznia 2021 roku, co daje ponad 1000 obserwacji dziennych cen.
+
+Zmienna analizowana:
+Analizie poddano cenę zamknięcia akcji (Close), czyli wartość, po jakiej zakończył się dany dzień notowań.
+
+Inne dostępne zmienne (niewykorzystane bezpośrednio w modelowaniu):
+  - Open – cena otwarcia
+  - High – najwyższa cena dnia
+  - Low – najniższa cena dnia
+  - Volume – liczba wymienionych akcji
+  - Adjusted Close – cena zamknięcia skorygowana o wypłaty (np. dywidendy)
+
+Braki danych:
+Zbiór danych nie zawiera braków w zakresie dni roboczych giełdy. Nieobecność wpisów w niektóre dni wynika z przerw w notowaniach (weekendy i święta), co jest typowe dla danych giełdowych. W samym szeregu cen zamknięcia brak wartości NA.
+
+```{r wczytanie danych, include=FALSE}
+# Pobranie danych dane z Yahoo Finance
+getSymbols("PLTR", src = "yahoo", from = "2021-01-01")
+
+pltr_close <- Cl(PLTR)
+
+pltr_ts <- ts(pltr_close, frequency = 252)
+```
+
+## Dzienna ceny zamknięcia Palantir
+
+```{r wizualizacja dancyh, echo=FALSE}
+# Wyświetlanie kilka pierwszych wierszy
+head(PLTR)
+
+# Wykres cen akcji
+chartSeries(pltr_close)
+```
+
+## Dobór metod analizy odpowiadającej celowi badania
+Celem analizy było zbudowanie modelu umożliwiającego prognozowanie przyszłych dziennych cen zamknięcia akcji spółki Palantir Technologies Inc. (PLTR). Ponieważ dane mają charakter jednowymiarowego szeregu czasowego o częstotliwości dziennej, zastosowano metody klasyczne.
+
+W pierwszej kolejności wykonano analizę stacjonarności szeregu – warunku koniecznego do zastosowania wielu modeli predykcyjnych, takich jak ARIMA. Wykorzystano wykres danych, test Dickeya-Fullera (ADF) oraz analizę funkcji autokorelacji (ACF) i częściowej autokorelacji (PACF). Sprawdzono także, czy szereg jest białym szumem, stosując test Ljunga-Boxa.
+
+W kolejnym kroku wykorzystano model ARIMA (AutoRegressive Integrated Moving Average). Model ARIMA(p,d,q) łączy w sobie składniki autoregresyjne (AR), różnicowanie (I – integrację) oraz składniki średniej ruchomej (MA). Wybrano go ze względu na jego zdolność do modelowania szeregów niestacjonarnych, po uprzednim ich różnicowaniu.
+
+Dodatkowo dla celów porównawczych zastosowano metodę wygładzania wykładniczego Holt-Wintersa, która dobrze sprawdza się przy prognozowaniu danych wykazujących trend. Metoda ta pozwala na uwzględnienie zmian poziomu oraz trendu szeregu w czasie, a także zapewnia prostą interpretację parametrów.
+
+## Stacjonarność
+Stacjonarność szeregu czasowego oznacza, że jego właściwości statystyczne (średnia, wariancja, autokorelacja) nie zmieniają się w czasie. Jest to kluczowe założenie wielu modeli (np. ARIMA), ponieważ niestacjonarne szeregi mogą prowadzić do błędnych prognoz. Aby sprawdzić stacjonarność, stosuje się test Dickeya-Fullera (ADF)
+
+## Test Dickeya-Fullera (ADF)
+Test ADF sprawdza hipotezę zerową, że szereg ma jednostkowy pierwiastek, czyli jest niestacjonarny. Jeśli wartość p-value < 0.05, odrzucamy hipotezę zerową i uznajemy szereg za stacjonarny.
+
+``` {r Sprawdzenie stacjonarności – wykres i test Dickeya-Fullera, echo=FALSE}
+# Wykres oryginalnego szeregu
+autoplot(pltr_ts) +
+  ggtitle("Szereg czasowy – cena zamknięcia akcji Palantir") +
+  xlab("Data") + ylab("Cena zamknięcia (USD)")
+
+# Test Dickeya-Fullera (ADF)
+adf.test(pltr_ts)
+```
+## Hipotezy testowe:
+H0 szereg jest niestacjonary, zawiera pierwiastek jednostkowy.
+H1 szereg jest stacjonarny.
+
+#3 Wynik testu:
+Dickey-Fuller = 0.9993
+Lag order = 10
+p-value = 0.99
+
+Statystyka testowa (Dickey-Fuller = 0.9993) – to wartość obliczona przez test, która porównywana jest z wartościami krytycznymi.
+p-value = 0.99 – jest wysokie, co oznacza brak podstaw do odrzucenia hipotezy zerowej.
+Lag order = 10 – test uwzględnił 10 opóźnień, by skorygować autokorelację w resztach.
+
+## Interpretacja:
+Ponieważ p-value wynosi **0.99**, a więc znacznie przekracza próg istotności (np. 0.05), **nie ma podstaw do odrzucenia hipotezy zerowej**. Oznacza to, że szereg czasowy `pltr_close` **jest niestacjonarny**.
+
+## Wnioski:
+
+Szereg **wymaga przekształcenia**, najczęściej różnicowania (ang. *differencing*), aby osiągnąć stacjonarność.
+Po różnicowaniu należy ponownie przeprowadzić test ADF, by sprawdzić, czy szereg po przekształceniu stał się stacjonarny.
+
+``` {r Test adf po róznicowaniu, echo=FALSE}
+# Różnicowanie pierwszego rzędu
+pltr_diff <- diff(pltr_ts)
+
+# Usunięcie wartości NA
+pltr_diff_clean <- na.omit(pltr_diff)
+
+# Wykres szeregu po różnicowaniu
+autoplot(pltr_diff_clean) +
+  ggtitle("Pierwsza różnica ceny zamknięcia akcji Palantir") +
+  xlab("Data") + ylab("Różnicowana cena zamknięcia (USD)")
+
+# Test ADF po różnicowaniu
+adf_result_diff <- adf.test(pltr_diff_clean)
+print(adf_result_diff)
+```
+## Analiza i interpretacja wyników po różnicowaniu
+Wartość statystyki testu: −10.349 — to bardzo niska wartość, co sugeruje silne odrzucenie hipotezy zerowej.
+
+p-value: Jest mniejsze niż 0.01, co potwierdza, że wynik jest istotny statystycznie na poziomie istotności 1% (czyli z bardzo wysoką pewnością odrzucamy H0).
+
+Wniosek: Po pierwszym różnicowaniu szeregu czasowego ceny zamknięcia akcji Palantir możemy odrzucić hipotezę zerową o niestacjonarności.
+
+Implikacje dla dalszej analizy:
+
+Oryginalny szereg był niestacjonarny (p-value ≈ 0.99), więc nie nadawał się do klasycznych metod modelowania szeregów czasowych, jak np. ARMA czy ARIMA bez różnicowania.
+
+## Autokorelacja (ACF) i częściowa autokorelacja (PACF)
+ACF (Autocorrelation Function) pokazuje, jak bieżące wartości szeregu są skorelowane z jego przeszłymi wartościami w różnych opóźnieniach (lagach). Pomaga zidentyfikować sezonowość lub długookresowe zależności.
+
+PACF (Partial Autocorrelation Function) usuwa wpływ wcześniejszych lagów i pokazuje bezpośrednią korelację danego laga z bieżącą wartością.
+
+W praktyce, wykresy ACF i PACF służą do doboru parametrów modeli ARIMA – np. liczby opóźnień autoregresyjnych (AR) i średnich ruchomych (MA).
+
+``` {r Wykres ACF i PACF, echo=FALSE}
+# ACF i PACF oryginalnego szeregu
+acf(pltr_ts, main = "ACF – oryginalny szereg")
+pacf(pltr_ts, main = "PACF – oryginalny szereg")
+
+# ACF i PACF po różnicowaniu
+acf(na.omit(pltr_diff_clean), main = "ACF – różnicowany szereg")
+pacf(na.omit(pltr_diff_clean), main = "PACF – różnicowany szereg")
+```
+
+AUTOKORELACJA: Na pierwszym wykresie ACF dla oryginalnego szeregu zauważyć można wysoką autokorelacja na wszystkich lagach (wartości są bardzo blisko liczby 1). Charakterystyczny powolny spadek wskazuje na silną niestacjonarność szeregu. Zatem przeszłe wartości bardzo mocno wpływają na obecne.
+Wniosek: szereg nie jest stacjonarny i wymaga różnicowania.
+
+Na wykresie PACF dla oryginalnego szeregu , duża wartość występuje tylko dla laga 1 a pozostałe są bardzo blisko zera. Jest to charakterystyczne zachowanie dla procesu z komponentem autoregresyjnym (AR) rzędu 1.
+Wniosek: może to sugerować model ARIMA(1,d,0) ale najpierw trzeba usunąć niestacjonarność.
+
+Na wykresie ACF dla różnicowanego szeregu, wartości spadają gwałtownie po pierwszym lagu.
+Większość wartości mieści się w granicach istotności.
+Wniosek: szereg po różnicowaniu wygląda na stacjonarny, ACF wskazuje na możliwą obecność składnika MA(1).
+
+Na podstawie wykresu PACF z różnicowanym szeregiem zaobserwować można kilka lagów poza granicami istotności, ale nie można zaobserwować wyraźnego schematu.
+Wniosek: PACF nie wskazuje jednoznacznie na obecność składnika AR- możliwy jest model ARIMA(0,1,1) lub pokrewne.
+
+
+## Test Ljunga-Boxa
+Test Ljunga-Boxa sprawdza, czy pozostałości (reszty) modelu są niezależne, czyli czy model dobrze dopasował strukturę zależności w danych. Hipoteza zerowa mówi, że reszty są nieskorelowane (tzw. biały szum). Wysokie p-value (np. > 0.05) oznacza, że nie ma istotnych autokorelacji – model jest poprawny.
+
+``` {r Test Ljunga-Boxa – sprawdzanie białego szumu, echo=FALSE}
+# Test białego szumu na różnicowanym szeregu
+Box.test(na.omit(pltr_diff_clean), lag = 20, type = "Ljung-Box")
+```
+
+## Interpretacja wyniku:
+Hipoteza zerowa (H0): Dane są białym szumem — wartości są niezależne, brak autokorelacji.
+Hipoteza alternatywna (H1): Dane nie są białym szumem — występuje autokorelacja.
+
+Ponieważ p-value jest ekstremalnie małe (znacznie poniżej 0.05), odrzucamy hipotezę zerową. Oznacza to, że różnicowany szereg pltr_diff_clean nie jest białym szumem i zawiera istotne zależności autokorelacyjne. Innymi słowy, w danych dalej istnieje struktura, którą można modelować
+
+## Sprawdzenie sezonowości
+
+``` {r Sprawdzenie sezonowosci, echo=FALSE}
+decomp <- decompose(pltr_ts)
+plot(decomp)
+best_freq <- findfrequency(ts(pltr_close))
+print(best_freq)
+```
+## Wynik 
+`findfrequency(pltr_close)` dał `1`, co  sugeruje brak wyraźnej sezonowości. Gdyby np. dane miały sezonowość miesięczną, wynik byłby bliski 30, tygodniową – 7, roczną – 365 
+
+Można z dużym prawdopodobieństwem uznać, że dane nie zawierają istotnej sezonowości. 
+
+W takim przypadku:
+ARIMA bez komponentu sezonowego będzie odpowiednia.
+ETS może automatycznie dobrać komponenty, ale nie musi zawierać sezonowości.
+
+```{r tredn liniowy i kwadratowy, echo=FALSE }
+# Dane i modelowanie
+y <- as.numeric(pltr_ts)
+t <- 1:length(y)
+h <- 30
+t_future <- (length(y) + 1):(length(y) + h)
+
+model_lin <- lm(y ~ t)
+model_quad <- lm(y ~ t + I(t^2))
+
+# Prognozy
+pred_lin <- predict(model_lin, newdata = data.frame(t = t_future))
+pred_quad <- predict(model_quad, newdata = data.frame(t = t_future))
+
+# Wykres
+plot(y, type = "l", col = "black", lwd = 2, 
+     ylim = range(c(y, pred_lin, pred_quad)),
+     main = "Trend liniowy i kwadratowy – z prognozą", 
+     ylab = "Cena zamknięcia (USD)", xlab = "Czas")
+lines(fitted(model_lin), col = "blue", lwd = 2, lty = 2)
+lines(fitted(model_quad), col = "red", lwd = 2, lty = 3)
+lines(t_future, pred_lin, col = "blue", lwd = 2, lty = 2)
+lines(t_future, pred_quad, col = "red", lwd = 2, lty = 3)
+abline(v = length(y), col = "gray", lty = 3)
+legend("topleft", legend = c("Dane", "Trend liniowy", "Trend kwadratowy"),
+       col = c("black", "blue", "red"), lty = c(1, 2, 3), lwd = 2)
+
+```
+
+Trend liniowy reprezentuje stałe tempo wzrostu cen w czasie. 
+
+Tend kwadratowy uzględnia nielionwy przebieg danych pozwalając na modelowanie spadków czy silnych wzrostów.
+
+## Wynik
+Dane wykazują wyraźny nieliniowy wzorzec: początkowy spadek a następnie gwałtowny wzrost.
+
+Model kwadratowy lepiej odwzorowuje charakterystykę danych hisotrycznych i przewiduje przyszłość w sposób bardziej zgodny z obserwowanym przyspieszeniem cen.
+
+Model liniowy może być pomocny jako punkt odniesienia, ale w tym przypadku niedoszacowuje późniejsze wartości i ignoruje dynamikę rynku. Średni ogólny kierunek jest dobrze oddany, ale nie uchwyca zakrzywienia linii ani okresów stagnacji
+
+```{r podział danych na train i test, echo=FALSE}
+h <- 30
+n <- length(pltr_ts)
+
+train_ts <- window(pltr_ts, end = c(1, n - h))
+test_ts <- window(pltr_ts, start = c(1, n - h + 1))
+```
+## Modele ARIMA
+Model ARIMA(p,d,q) to połączenie trzech komponentów:
+
+AR(p) – autoregresja: szereg zależy liniowo od własnych przeszłych wartości
+
+I(d) – różnicowanie: ile razy należy odjąć szereg od siebie, by uzyskać stacjonarność
+
+MA(q) – średnia ruchoma: szereg zależy liniowo od przeszłych błędów prognozy
+
+Przykład: ARIMA(1,1,1) oznacza, że dane są jednokrotnie różnicowane i dopasowano jeden składnik AR i jeden MA.
+
+``` {r Model ARIMA, echo=FALSE, fig.width=12, fig.height=6}
+# Model ARIMA na danych treningowych
+model_arima <- auto.arima(train_ts, seasonal = FALSE)
+summary(model_arima)
+
+# Prognoza na okres testowy
+fc_arima <- forecast(model_arima, h = h)
+
+# Wykres prognozy vs dane rzeczywiste
+autoplot(fc_arima) +
+  autolayer(test_ts, series = "Dane testowe", linetype = "dashed") +
+  ggtitle("Prognoza ARIMA na 30 dni") +
+  ylab("Cena zamknięcia (USD)") + xlab("")
+
+# Ocena dokładności na danych testowych
+accuracy(fc_arima, test_ts)
+
+# Reszty
+reszty <- residuals(model_arima)
+hist(reszty, breaks = 30, main = "Histogram reszt modelu ARIMA",
+     xlab = "Reszty", col = "steelblue", border = "white")
+
+qqnorm(reszty, main = "Wykres Q-Q reszt modelu ARIMA")
+qqline(reszty, col = "red", lwd = 2)
+
+```
+Dopasowany został model ARIMA(1,2,0). Konieczne było więc dwukrotne różnicowanie szeregu aby osiągnąć stancjonarność.
+
+## Obserwacje na podstawie wyników dla danych treningowych:
+Niski RMSE = 1,93 oznacza niski błąd na danych uczących.
+Niski MAPE = 3,84% oznacza że model bardzo dobrze odwzorowuje dane treningowe 
+
+## Obserwacje z histogramu reszt i wykresu Q-Q reszt:
+Histogram nie prezentuje zbyt silnych wartości odstających. Rozkład jest wyraźnie skupiony wokół zera co oznacza, że model nie zaniża ani nie zawyża prognoz.
+
+Na wykresie Q-Q widać, że większość danych leży blisko czerwonej lini, zatem jest zgodna z rozkładem normalnym. Występują nielizczne wartości odstające widoczne na począrku i na końcu wykresu.
+
+## Obserwacje na podstawie prognozy ARIMA:
+Dane testowe wykazały wzrost jak prognoza- jednakże na wykresie zauważyć można znaczne  przesacowanie tych przyszłych wartości na okres 30 dni. Wyniko to z faktu że model ARIMA najlepiej radzi sobie z krótkoterminowymi prognozami.
+
+
+## Wygładzanie wykładnicze – model ETS
+Metoda ETS (Error, Trend, Seasonality) opiera się na wygładzaniu wykładniczym, gdzie większą wagę przypisuje się nowszym obserwacjom. W modelu Holt-Wintersa rozróżniamy trzy komponenty:
+
+Addytywny lub multiplikatywny trend
+
+Addytywna lub multiplikatywna sezonowość
+
+Losowy składnik błędu
+
+W R model ten można zastosować poprzez funkcję HoltWinters() lub ets().
+
+``` {r Model ETS, echo=FALSE, fig.width=12, fig.height=6}
+# Model ETS na danych treningowych
+model_ets <- stlf(train_ts)
+summary(model_ets)
+
+# Prognoza na okres testowy
+fc_ets <- invisible(forecast(model_ets, h = h));
+invisible(fc_ets)
+
+# Wykres prognozy vs dane rzeczywiste
+autoplot(fc_ets) +
+  autolayer(test_ts, series = "Dane testowe", linetype = "dashed") +
+  ggtitle("Prognoza ETS na 30 dni") +
+  ylab("Cena zamknięcia (USD)") + xlab("")
+
+# Ocena dokładności
+accuracy(fc_ets, test_ts)
+
+# Reszty
+reszty <- residuals(model_ets)
+hist(reszty, breaks = 30, main = "Histogram reszt modelu ETS",
+     xlab = "Reszty", col = "steelblue", border = "white")
+
+qqnorm(reszty, main = "Wykres Q-Q reszt modelu ETS")
+qqline(reszty, col = "red", lwd = 2)
+
+```
+
+## Obserwacje na podstawie wyników dla danych treningowych:
+Model nie wykrył sezonowości.
+Alpha = 0,89 wykazuje mocne zaufanie modelu dla najnopwszych obserwacji.
+Beta = 0,10 oznacza, że zmiany trendu są deliaktnie wygładzane.
+Phi = 0,8 wykazuje tłumienie trendu, prognoza nie zakłada nieskończonego wzrostu
+
+MAPE= 4% i RMSE= 1,4 w danych treninigowych jest zbliżony do tego z ARIMA ale testowe wartości są  znacznie mniejsze od tych z modelu ARIMA
+
+Zatem ETS lepiej poradził sobie z prognozą.
+
+## Obserwacje z histogramu reszt i wykresu Q-Q reszt:
+Histogram nie prezentuje zbyt silnych wartości odstających. Reszty są symetryczne. Rozkład jest wyraźnie skupiony wokół zera co oznacza, że model nie zaniża ani nie zawyża prognoz.
+
+Na wykresie Q-Q widać, że większość danych leży blisko czerwonej lini, zatem jest zgodna z rozkładem normalnym. Występują nielizczne wartości odstające widoczne na począrku i na końcu wykresu.
+
+Histogram reszt modelu ETS i wykres reszt modelu ETS wykazują podobne tendencje jak te wykresy dla modelu ARIMA- z jedynym zauważalnym mniejszym odstępem od normalności na początku wykresu
+
+## Obserwacje na podstawie prognozy ETS:
+Model ETS prognozuje umiarkowany wzrost ale nie nadąża za rzeczywistym dynamicnzym wzrostem. Zauważyć można jednak węższe strefy niepewności niż dla prognozy ARIMA. Można dojść dla wniosku, że okres 30 dni również okazałsię zbyt długim dla tego modelu.
+
+
